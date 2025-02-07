@@ -1,11 +1,12 @@
 import torch
 
 def step(ψ, H, dt, K=10):
+    norm = torch.norm(ψ)
     basis = torch.zeros((K, H.N_u * H.N_d), dtype=ψ.dtype, device=ψ.device)
     α = torch.zeros(K, dtype=ψ.dtype, device=ψ.device)
-    β = torch.zeros(K, dtype=torch.float64, device=ψ.device)
+    β = torch.zeros(K, dtype=norm.dtype, device=ψ.device)
+    
     basis[0] = ψ.view(-1) / torch.norm(ψ)
-
     for j in range(K):
         w = H.H(basis[j].view(H.N_u, H.N_d)).view(-1)
         α[j] = torch.vdot(basis[j], w)

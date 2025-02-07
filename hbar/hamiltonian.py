@@ -1,5 +1,5 @@
 import torch
-from utils import state2idx, popcount64, timed
+from .utils import state2idx, popcount64, timed
 from math import comb
 
 class Hamiltonian:
