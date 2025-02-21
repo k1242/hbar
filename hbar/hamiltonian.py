@@ -3,89 +3,123 @@ from .utils import state2idx, popcount64, timed
 from math import comb
 
 class Hamiltonian:
-    def __init__(self, n_u, n_d, L0, L1, u=1.0, t=1.0, v=1.0, potential=None, device="cpu"):
-        self.info = {}
-        self.L0 = L0
-        self.L1 = L1
-        self.L = L0 * L1
+    """
+    Hamiltonian class for a 2D Fermi Hubbard system on arbitrary lattice. 
+    This class constructs the Hamiltonian matrix elements for a system with 
+    a given adjacency matrix, particle numbers, and interaction parameters.
+    
+    Parameters:
+    - n_u: Number of spin-up (↑) electrons.
+    - n_d: Number of spin-down (↓) electrons.
+    - adj_mat: Adjacency matrix representing allowed hopping between lattice sites.
+    - potential: External potential array.
+    - u: On-site interaction strength.
+    - t: Hopping amplitude.
+    - v: External potential strength.
+    - device: Compute device ('cpu' or 'cuda').
+    
+    Key Methods:
+    - H(psi): Apply the Hamiltonian operator to a wavefunction psi.
+    - E(psi): Compute the energy expectation value for psi.
+    """
+    
+    def __init__(self, n_u, n_d, adj_mat, potential, u=1.0, t=1.0, v=1.0, device="cpu"):
+        self.adj_mat = torch.triu(adj_mat)
+        self.L = adj_mat.size(0)  # number of lattice sites
         self.n_u = n_u
         self.n_d = n_d
         self.u = u
         self.t = t
         self.v = v
         self.device = device
-        self.potential = potential if potential is not None else torch.zeros((self.L,), device=self.device)
+        self.potential = potential
         self._build()
-
+    
     def _build(self):
+        """Precompute all necessary operators for Hamiltonian."""
         self.N_u = comb(self.L, self.n_u)
         self.N_d = comb(self.L, self.n_d)
-        self.N = self.N_u * self.N_d
-        self._gen_pos()
-        self.up = self._gen_combinations(self.n_u, self.L)
-        self.down = self._gen_combinations(self.n_d, self.L)
-        self._gen_T()
-        self._gen_U()
-        self._gen_V()
+        self.N = self.N_u * self.N_d  # total number of basis states
+        self.site_idx = torch.arange(self.L, device=self.device)
+        self.up = self._gen_combinations(self.n_u)  # ↑ basis
+        self.down = self._gen_combinations(self.n_d)  # ↓ basis
+        self._gen_T()  # kinetic energy operator
+        self._gen_U()  # interaction operator
+        self._gen_V()  # potential energy operator
 
-    def _gen_pos(self):
-        self.pos0 = torch.arange(self.L-self.L1, device=self.device)
-        self.pos1 = torch.arange(self.L, device=self.device)
-        self.pos1 = self.pos1[(self.pos1+1) % self.L1 != 0]        
-        self.pos_snake = torch.arange(self.L-1, device=self.device) # to generate combinations
-        self.pos_full = torch.arange(self.L, device=self.device)
-
-    def _gen_combinations(self, n, L):
-        states = torch.tensor([2**n - 1], device=self.device)
-        while len(states) != comb(L, n):
-            states = torch.cat((states, self._hop(states, self.pos_snake, 1)[0])).unique()
+    def _gen_combinations(self, n):
+        """Generate all possible n-electron states as bit representations."""
+        states = torch.tensor([2**n - 1], device=self.device)  # initial state: first n sites occupied
+        while len(states) != comb(self.L, n): # walk with bfs through all states
+            states = torch.cat((states, self._hop(states, self.site_idx[:-1], self.site_idx[:-1]+1)[0])).unique()
         return states
 
     def _gen_U(self):
+        """Compute the interaction matrix U diag, counting overlapping electron positions."""
         self._U = popcount64(self.up[:, None] & self.down[None, :])
 
     def _gen_V(self):
-        pot_u = torch.sum(((self.up[:, None] & (1 << self.pos_full[None, :])) != 0) * self.potential, dim=1)
-        pot_d = torch.sum(((self.down[:, None] & (1 << self.pos_full[None, :])) != 0) * self.potential, dim=1)
+        """Compute the potential energy matrix V diag based on external potential values."""
+        pot_u = torch.sum(((self.up[:, None] & (1 << self.site_idx[None, :])) != 0) * self.potential, dim=1)
+        pot_d = torch.sum(((self.down[:, None] & (1 << self.site_idx[None, :])) != 0) * self.potential, dim=1)
         self._V = pot_u[:, None] + pot_d[None, :]
 
-    def _gen_T(self):
-        self._T = (self._gen_Tσ(self.up), self._gen_Tσ(self.down))
-
-    def _hop(self, states, pos, shift):
-        valid = (states[:, None] & (1 << pos)).bool() & ~(states[:, None] & (1 << (pos + shift))).bool()
-        return (states[:, None] ^ ((1 << pos) | (1 << (pos + shift))))[valid], valid
-
-    def _gen_Tjσ(self, states, pos, shift):
-        hopped, valid = self._hop(states, pos, shift)
-        src_idx = torch.arange(states.size(0), device=self.device).repeat_interleave(pos.size(0))[valid.flatten()]
-        dst_idx = state2idx(states, hopped)
-        pos_valid = pos.repeat(states.size(0))[valid.flatten()]    
-        mask = ((1 << (pos_valid + shift)) - 1) ^ ((1 << (pos_valid + 1)) - 1)
-        coef = (-1)**popcount64(hopped & mask)
+    def _gen_hop(self, states):
+        """Generate kinetic energy transitions for a given spin configuration."""
+        src, dst = self.adj_mat.nonzero(as_tuple=True)  # get allowed hopping transitions
+        hopped, valid = self._hop(states, src, dst)  # compute valid hop states
+        src_idx = torch.arange(states.size(0), device=self.device).repeat_interleave(self.adj_mat.sum())[valid]
+        dst_idx = state2idx(states, hopped)  # map new states to their indices
+        mask = torch.bitwise_xor(
+            (1 << src.repeat(states.size(0))[valid]) - 1,  
+            (1 << dst.repeat(states.size(0))[valid]) - 1
+        ) # mask to count fermions between src and dst
+        coef = (-1) ** popcount64(hopped & mask)  # compute sign factor based on parity
         return src_idx, dst_idx, coef
 
-    def _gen_Tσ(self, states):
-        src_idx0, dst_idx0, coef0 = self._gen_Tjσ(states, self.pos0, self.L1)
-        src_idx1, dst_idx1, coef1 = self._gen_Tjσ(states, self.pos1, 1)
-        return torch.cat((src_idx0, src_idx1)), torch.cat((dst_idx0, dst_idx1)), torch.cat((coef0, coef1))
+    def _gen_T(self):
+        """Compute the kinetic energy matrix T using allowed hopping transitions for ↑ and ↓ basis separately."""
+        self._T_u = self._gen_hop(self.up)
+        self._T_d = self._gen_hop(self.down)
+
+    def _hop(self, states, src, dst):
+        """Compute the valid hopping transitions from source to destination for all states."""
+        valid = torch.bitwise_and(
+            (states[:, None] & (1 << src)).bool(),  # check if src site is occupied
+            ~(states[:, None] & (1 << dst)).bool()   # check if dst site is empty
+        )
+        hopped = torch.bitwise_xor(
+            states[:, None],
+            (1 << src) | (1 << dst)  # flip the bits for hopping transition
+        )[valid]
+        return hopped, valid.flatten()
+
+    def upd_V(self, potential):
+        """Update the external potential and recompute the potential matrix."""
+        self.potential = potential
+        self._gen_V()
 
     def U(self, psi): 
+        """Apply the interaction operator U to the wavefunction psi."""
         return self._U * psi
     
     def V(self, psi): 
+        """Apply the potential energy operator V to the wavefunction psi."""
         return self._V * psi
     
     def T(self, psi):
+        """Apply the kinetic energy operator T to the wavefunction psi."""
         res = torch.zeros_like(psi)
-        res.index_add_(0, self._T[0][1], self._T[0][2][:, None] * psi[self._T[0][0], :]) # up: src → dst
-        res.index_add_(0, self._T[0][0], self._T[0][2][:, None] * psi[self._T[0][1], :]) # up: dst → src
-        res.index_add_(1, self._T[1][1], self._T[1][2][None, :] * psi[:, self._T[1][0]]) # down: src → dst
-        res.index_add_(1, self._T[1][0], self._T[1][2][None, :] * psi[:, self._T[1][1]]) # down: dst → src
+        res.index_add_(0, self._T_u[1], self._T_u[2][:, None] * psi[self._T_u[0], :])  # ↑: src → dst
+        res.index_add_(0, self._T_u[0], self._T_u[2][:, None] * psi[self._T_u[1], :])  # ↑: src ← dst
+        res.index_add_(1, self._T_d[1], self._T_d[2][None, :] * psi[:, self._T_d[0]])  # ↓: src → dst
+        res.index_add_(1, self._T_d[0], self._T_d[2][None, :] * psi[:, self._T_d[1]])  # ↓: src ← dst
         return res
 
     def H(self, psi):
-        return -self.t*self.T(psi) + self.u*self.U(psi) + self.v*self.V(psi)
-
+        """Compute the Hamiltonian applied to the wavefunction psi."""
+        return -self.t * self.T(psi) + self.u * self.U(psi) + self.v * self.V(psi)
+    
     def E(self, psi):
+        """Compute the energy expectation value for wavefunction psi."""
         return torch.vdot(psi.view(-1), self.H(psi).view(-1)).real.item()
