@@ -31,7 +31,7 @@ def timed(fn):
 # transform hamiltonian H to matrix M
 def H2M(H):
     def gen_TM():
-        (src_u, dst_u, c_u), (src_d, dst_d, c_d) = H._T
+        (src_u, dst_u, c_u), (src_d, dst_d, c_d) = H._T_u, H._T_d
         ar_d = torch.arange(H.N_d, device=H.device)
         ar_u = torch.arange(H.N_u, device=H.device)
         x = torch.cat([
