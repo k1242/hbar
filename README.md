@@ -16,7 +16,7 @@ where:
 - _Vⱼ_ is an external potential
 
 
-For more discussion on localization and thermalization, see my [https://github.com/k1242/notes_QST/blob/main/MB/ETH2MBL.pdf](essay).
+For more discussion on localization and thermalization, see my [essay](https://github.com/k1242/notes_QST/blob/main/MB/ETH2MBL.pdf).
 
 <!-- 
 ## Installation
