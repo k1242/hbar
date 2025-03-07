@@ -2,7 +2,7 @@
 
 **hbar** is a PyTorch-based library for simulating quantum many-body systems, specifically the 2D Fermi-Hubbard model. It provides tools for Hamiltonian construction and Krylov-based time evolution methods. Examples od usage can be found in `notebooks/` directory. Arbitrary adjacency matrices for system connectivity are supported up to 64 lattice sites. 
 
-<img src="assets/uv.mp4" width="400">
+<img src="assets/uv.gif" width="400">
 
 ## Model Description
 The system follows the 2D Fermi-Hubbard Hamiltonian:
